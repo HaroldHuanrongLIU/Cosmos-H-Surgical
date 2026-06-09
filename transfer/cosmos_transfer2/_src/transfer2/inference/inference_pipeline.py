@@ -564,7 +564,7 @@ class ControlVideo2WorldInference:
                         )
                         x0 = self.model.encode(x0).contiguous()
                         if sigma_max is not None:
-                            x_sigma_max = self.model.get_x_from_clean(x0, sigma_max, seed=(seed + chunk_id))
+                            x_sigma_max = self.model.get_x_from_clean(x0, sigma_max, seed=seed)
 
                         if guided_generation_mask is not None:
                             _, C, T, H, W = x0.shape

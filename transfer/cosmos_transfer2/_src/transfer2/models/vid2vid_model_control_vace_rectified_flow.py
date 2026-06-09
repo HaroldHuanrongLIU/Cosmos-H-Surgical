@@ -17,6 +17,7 @@ import os
 from typing import Callable, Dict, Tuple
 
 import attrs
+import numpy as np
 import torch
 import torch.distributed.checkpoint as dcp
 import torch.nn as nn
@@ -337,6 +338,8 @@ class ControlVideo2WorldModelRectifiedFlow(Video2WorldModelRectifiedFlow):
         is_negative_prompt: bool = False,
         num_steps: int = 35,
         shift: float = 5.0,
+        x_sigma_max: torch.Tensor | None = None,
+        sigma_max: float | None = None,
         **kwargs,
     ) -> torch.Tensor:
         """
@@ -350,6 +353,8 @@ class ControlVideo2WorldModelRectifiedFlow(Video2WorldModelRectifiedFlow):
             n_sample (int): number of samples to generate
             is_negative_prompt (bool): use negative prompt t5 in uncondition if true
             num_steps (int): number of steps for the diffusion process
+            x_sigma_max (torch.Tensor, optional): Partially noised clean input latent to start denoising from.
+            sigma_max (float, optional): User-facing denoising strength in EDM sigma units.
         """
         self._normalize_video_databatch_inplace(data_batch)
         self._augment_image_dim_inplace(data_batch)
@@ -365,23 +370,45 @@ class ControlVideo2WorldModelRectifiedFlow(Video2WorldModelRectifiedFlow):
                 _H // self.tokenizer.spatial_compression_factor,
                 _W // self.tokenizer.spatial_compression_factor,
             ]
+        expected_latent_shape = (n_sample,) + tuple(state_shape)
 
         noise = misc.arch_invariant_rand(
-            (n_sample,) + tuple(state_shape),
+            expected_latent_shape,
             torch.float32,
             self.tensor_kwargs["device"],
             seed,
         )
+        partial_denoising = sigma_max is not None
+        if partial_denoising and x_sigma_max is None:
+            raise ValueError("sigma_max was provided, but x_sigma_max is missing for partial denoising.")
+        if x_sigma_max is not None:
+            if tuple(x_sigma_max.shape) != expected_latent_shape:
+                raise ValueError(f"x_sigma_max shape {tuple(x_sigma_max.shape)} does not match {expected_latent_shape}")
+            x_sigma_max = x_sigma_max.to(device=self.tensor_kwargs["device"], dtype=torch.float32)
 
         seed_g = torch.Generator(device=self.tensor_kwargs["device"])
         seed_g.manual_seed(seed)
 
-        self.sample_scheduler.set_timesteps(
-            num_steps,
-            device=self.tensor_kwargs["device"],
-            shift=shift,
-            use_kerras_sigma=self.config.use_kerras_sigma_at_inference,
-        )
+        if partial_denoising:
+            flow_sigma_max = self._edm_sigma_to_flow_sigma(sigma_max)
+            if flow_sigma_max == 0:
+                log.info("sigma_max=0; returning encoded input latent without denoising.")
+                return x_sigma_max.to(**self.tensor_kwargs)
+            self.sample_scheduler.set_timesteps(
+                num_steps,
+                device=self.tensor_kwargs["device"],
+                sigmas=self._get_partial_denoising_sigmas(sigma_max, num_steps),
+                shift=1,
+                use_kerras_sigma=False,
+            )
+            log.info(f"Partial denoising enabled with sigma_max={sigma_max} (flow sigma={flow_sigma_max:.6f})")
+        else:
+            self.sample_scheduler.set_timesteps(
+                num_steps,
+                device=self.tensor_kwargs["device"],
+                shift=shift,
+                use_kerras_sigma=self.config.use_kerras_sigma_at_inference,
+            )
 
         timesteps = self.sample_scheduler.timesteps
         sigmas = self.sample_scheduler.sigmas
@@ -406,7 +433,13 @@ class ControlVideo2WorldModelRectifiedFlow(Video2WorldModelRectifiedFlow):
                 after_split_shape = find_split(noise.shape, cp_size, view_factor=n_views)
                 after_split_shape = torch.Size([after_split_shape[0] * n_views, *after_split_shape[1:]])
                 noise = rearrange(noise, "b c t h w -> b c (t h w)")
+                if x_sigma_max is not None:
+                    x_sigma_max = rearrange(x_sigma_max, "b c t h w -> b c (t h w)")
             noise = broadcast_split_tensor(tensor=noise, seq_dim=2, process_group=self.get_context_parallel_group())
+            if x_sigma_max is not None:
+                x_sigma_max = broadcast_split_tensor(
+                    tensor=x_sigma_max, seq_dim=2, process_group=self.get_context_parallel_group()
+                )
             if x0_spatial_condition is not None:
                 x0 = broadcast_split_tensor(x0, seq_dim=2, process_group=self.get_context_parallel_group())
                 x_sigma_mask = broadcast_split_tensor(
@@ -414,13 +447,17 @@ class ControlVideo2WorldModelRectifiedFlow(Video2WorldModelRectifiedFlow):
                 )
             if use_spatial_split:
                 noise = rearrange(noise, "b c (t h w) -> b c t h w", t=after_split_shape[0], h=after_split_shape[1])
+                if x_sigma_max is not None:
+                    x_sigma_max = rearrange(
+                        x_sigma_max, "b c (t h w) -> b c t h w", t=after_split_shape[0], h=after_split_shape[1]
+                    )
                 if x0_spatial_condition is not None:
                     x0 = rearrange(x0, "b c (t h w) -> b c t h w", t=after_split_shape[0], h=after_split_shape[1])
                     x_sigma_mask = rearrange(
                         x_sigma_mask, "b c (t h w) -> b c t h w", t=after_split_shape[0], h=after_split_shape[1]
                     )
 
-        latents = noise
+        latents = x_sigma_max if x_sigma_max is not None else noise
 
         if INTERNAL:
             timesteps_iter = timesteps
@@ -790,10 +827,37 @@ class ControlVideo2WorldModelRectifiedFlow(Video2WorldModelRectifiedFlow):
         """
         if in_clean_img is None:
             return None
-        generator = torch.Generator(device=self.tensor_kwargs["device"])
-        generator.manual_seed(seed)
-        noise = torch.randn(*in_clean_img.shape, **self.tensor_kwargs, generator=generator)
-        if sigma_max is None:
-            sigma_max = self.sde.sigma_max
-        x_sigma_max = in_clean_img + noise * sigma_max
+        flow_sigma = self._edm_sigma_to_flow_sigma(sigma_max)
+        noise = misc.arch_invariant_rand(
+            tuple(in_clean_img.shape),
+            torch.float32,
+            self.tensor_kwargs["device"],
+            seed,
+        ).to(dtype=in_clean_img.dtype)
+        x_sigma_max = noise * flow_sigma + in_clean_img * (1 - flow_sigma)
         return x_sigma_max
+
+    @staticmethod
+    def _edm_sigma_to_flow_sigma(sigma_max: float | None) -> float:
+        if sigma_max is None:
+            return 1.0
+        sigma_max = float(sigma_max)
+        if sigma_max < 0:
+            raise ValueError(f"sigma_max must be non-negative, got {sigma_max}")
+        return sigma_max / (1.0 + sigma_max)
+
+    def _get_partial_denoising_sigmas(self, sigma_max: float, num_steps: int) -> np.ndarray:
+        if num_steps <= 0:
+            raise ValueError(f"num_steps must be positive, got {num_steps}")
+
+        flow_sigma_max = self._edm_sigma_to_flow_sigma(sigma_max)
+        sigma_min = 0.01
+        if self.config.use_kerras_sigma_at_inference and sigma_max > sigma_min:
+            rho = 7
+            ramp = np.arange(num_steps + 1, dtype=np.float32) / num_steps
+            min_inv_rho = sigma_min ** (1 / rho)
+            max_inv_rho = float(sigma_max) ** (1 / rho)
+            edm_sigmas = (max_inv_rho + ramp * (min_inv_rho - max_inv_rho)) ** rho
+            return (edm_sigmas / (1 + edm_sigmas)).astype(np.float32)[:-1]
+
+        return np.linspace(flow_sigma_max, 0.0, num_steps + 1, dtype=np.float32)[:-1]
