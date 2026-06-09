@@ -150,51 +150,87 @@ If you would like the control inputs to only be used for some regions, you can d
 ### Example Output
 <table>
   <tr>
+    <th>Depth Control Output</th>
+    <th>Edge Control Output</th>
+    <th>Seg Control Output</th>
+    <th>Vis Control Output</th>
+  </tr>
+  <tr>
+    <td valign="middle" width="25%">
+      <video src="https://github.com/user-attachments/assets/e817b143-3af3-4219-8a3f-479b99f6c484" width="100%" controls></video>
+    </td>
+    <td valign="middle" width="25%">
+      <video src="https://github.com/user-attachments/assets/2219e1d3-f428-4f98-bc89-5af1d66af962" width="100%" controls></video>
+    </td>
+    <td valign="middle" width="25%">
+      <video src="https://github.com/user-attachments/assets/ed62210a-f20a-4a6a-8206-d526a2c6bf72" width="100%" controls></video>
+    </td>
+    <td valign="middle" width="25%">
+      <video src="https://github.com/user-attachments/assets/61d056b6-c92a-478a-b522-a5f00c5eb31c" width="100%" controls></video>
+    </td>
+  </tr>
+</table>
+
+<table>
+  <tr>
     <th>Output Multi-control Video</th>
   </tr>
   <tr>
-    <td valign="middle" width="60%">
-      <video src="https://github.com/user-attachments/assets/a712073a-40d3-4ed7-884c-416695ec4f55" width="60%" controls></video>
+    <td valign="middle" width="50%">
+      <video src="https://github.com/user-attachments/assets/a712073a-40d3-4ed7-884c-416695ec4f55" width="50%" controls></video>
     </td>
   </tr>
 </table>
+
+
+### Partial Denoising
+
+Partial denoising starts generation from a noised version of the input video latent instead of starting from pure random noise. Use the optional `sigma_max` field to control how much noise is added to the encoded input before denoising.
+
+```jsonc
+{
+    "name": "coagulation_depth_partial_denoising_70",
+    "prompt_path": "coagulation_example/coagulation_prompt.txt",
+    "video_path": "coagulation_example/coagulation_input.mp4",
+    "guidance": 3,
+
+    // Current JSON/JSONL schema expects sigma_max as a string.
+    "sigma_max": "70",
+
+    "depth": {
+        "control_path": "coagulation_example/depth/coagulation_depth.mp4",
+        "control_weight": 1.0
+    }
+}
+```
+
+For [JSONL batch testing](assets/depth_partial_denoising.jsonl), run the same sample with several `sigma_max` values and compare the outputs.
+
+In this rectified-flow pipeline, the user-facing `sigma_max` is converted to a normalized flow sigma by `sigma_max / (1 + sigma_max)`. 
+
+Values are accepted in the documented range `"0"` to `"200"`, but high values such as larger than `"100"` are all close to full-noise in the rectified-flow schedule. Lower values are usually more useful when testing input preservation.
+
+#### Example Output with Different `sigma_max`
+
 <table>
   <tr>
-    <th>Output Depth-control Video</th>
+    <th>Original Video</th>
+    <th>Depth Control Output (sigma_max=10)</th>
+    <th>Depth Control Output (sigma_max=70)</th>
+    <th>Depth Control Output (sigma_max=200)</th>
   </tr>
   <tr>
-    <td valign="middle" width="60%">
-      <video src="https://github.com/user-attachments/assets/e817b143-3af3-4219-8a3f-479b99f6c484" width="60%" controls></video>
+    <td valign="middle" width="25%">
+      <video src="https://github.com/user-attachments/assets/ec1c13c4-ca34-43b0-9ec1-3b795ed1981a" width="100%" controls></video>
     </td>
-  </tr>
-</table>
-<table>
-  <tr>
-    <th>Output Edge-control Video</th>
-  </tr>
-  <tr>
-    <td valign="middle" width="60%">
-      <video src="https://github.com/user-attachments/assets/2219e1d3-f428-4f98-bc89-5af1d66af962" width="60%" controls></video>
+    <td valign="middle" width="25%">
+      <video src="https://github.com/user-attachments/assets/b6c1dd1c-0489-4e52-86da-a5a90568ad6e" width="100%" controls></video>
     </td>
-  </tr>
-</table>
-<table>
-  <tr>
-    <th>Output Seg-control Video</th>
-  </tr>
-  <tr>
-    <td valign="middle" width="60%">
-      <video src="https://github.com/user-attachments/assets/ed62210a-f20a-4a6a-8206-d526a2c6bf72" width="60%" controls></video>
+    <td valign="middle" width="25%">
+      <video src="https://github.com/user-attachments/assets/3c6fec63-4541-4a10-acae-2f28358c59e7" width="100%" controls></video>
     </td>
-  </tr>
-</table>
-<table>
-  <tr>
-    <th>Output Vis-control Video</th>
-  </tr>
-  <tr>
-    <td valign="middle" width="60%">
-      <video src="https://github.com/user-attachments/assets/61d056b6-c92a-478a-b522-a5f00c5eb31c" width="60%" controls></video>
+    <td valign="middle" width="25%">
+      <video src="https://github.com/user-attachments/assets/38b42a45-53c3-4401-b656-c12fc9f6eccc" width="100%" controls></video>
     </td>
   </tr>
 </table>

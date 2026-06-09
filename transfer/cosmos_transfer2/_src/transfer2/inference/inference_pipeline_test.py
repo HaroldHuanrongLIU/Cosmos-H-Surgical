@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -62,6 +63,21 @@ def create_random_control_inputs(hint_keys=["edge"], batch_size=1, num_frames=93
     for key in hint_keys:
         control_dict[f"control_input_{key}"] = torch.randn(batch_size, 3, num_frames, height, width)
     return control_dict
+
+
+@pytest.mark.L1
+def test_partial_denoising_sigma_schedule():
+    from cosmos_transfer2._src.transfer2.models.vid2vid_model_control_vace_rectified_flow import (
+        ControlVideo2WorldModelRectifiedFlow,
+    )
+
+    model = SimpleNamespace(config=SimpleNamespace(use_kerras_sigma_at_inference=False))
+    sigmas = ControlVideo2WorldModelRectifiedFlow._get_partial_denoising_sigmas(model, sigma_max=200, num_steps=4)
+
+    assert np.isclose(ControlVideo2WorldModelRectifiedFlow._edm_sigma_to_flow_sigma(200), 200 / 201)
+    assert sigmas.shape == (4,)
+    assert np.isclose(sigmas[0], 200 / 201)
+    assert np.all(np.diff(sigmas) < 0)
 
 
 def get_test_video2world_config():
