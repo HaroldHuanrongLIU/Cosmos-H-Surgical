@@ -204,7 +204,7 @@ Partial denoising starts generation from a noised version of the input video lat
 }
 ```
 
-For [JSONL batch testing](assets/depth_partial_denoising.jsonl), run the same sample with several `sigma_max` values and compare the outputs.
+For [JSONL batch testing](../assets/depth_partial_denoising.jsonl), run the same sample with several `sigma_max` values and compare the outputs.
 
 In this rectified-flow pipeline, the user-facing `sigma_max` is converted to a normalized flow sigma by `sigma_max / (1 + sigma_max)`. 
 
